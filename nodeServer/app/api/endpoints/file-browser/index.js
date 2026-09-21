@@ -10,13 +10,17 @@ const path = require('path');
 const static = require('../static.js');
 const helper = require('../helper.js');
 const { unzip } = require('zlib');
-const { DH_CHECK_P_NOT_SAFE_PRIME } = require('constants');
+const copySamples = static.CONFIG.COPY_SAMPLES_WITH_XPM == '1';
+
+let MOCKBA = '';
 
 
-
-function INIT($req, $res) {
+function INIT($req, $res, NS) {
     RES = $res;
     REQ = $req;
+    MOCKBA = NS.MOCKBA;
+    //static.refresh();
+    //console.log("static was refreshed");
     URL = $req.url.replace("/^\//", '').split('/');
 
     switch (URL[2]) {
@@ -31,12 +35,16 @@ function INIT($req, $res) {
         case "READ":
             READ();
             break;
+        case "SPECTROGRAM":
+            doSpectrogram();
+            break;
         case "FSCOMMAND":
             FSCOMMAND();
             break;
         case "DOWNLOAD":
             DOWNLOAD();
             break;
+
     }
 }
 
@@ -58,23 +66,100 @@ function READ() {
     });
 }
 
-function isHidden(f){
-let hidden = static.CONFIG.HIDDEN_FILES.toLowerCase().replaceAll(' ',',').trim().split(',').filter(e=>e.startsWith('.'));
-return hidden.includes(path.extname(f).toLowerCase());
+function isHidden(f) {
+    let hidden = static.CONFIG.HIDDEN_FILES.toLowerCase().replaceAll(' ', ',').trim().split(',').filter(e => e.startsWith('.'));
+    return hidden.includes(path.extname(f).toLowerCase());
+}
+
+function isExpansion(d) {
+    //console.log("checking", d);
+    let m = d.match(/(.*\/Expansions\/[^\/]+)\/?/);
+    if (!m) return false;
+    let f = path.join(m[1], "Expansion.xml")
+    return fs.existsSync(f);
+
+}
+
+function getTagData(data, tag) {
+    let rex = new RegExp(`<${tag}>(.*)</${tag}`);
+    let m = data.match(rex);
+    if (m) {
+        return m[1].replaceAll("&amp;", "&");
+    }
+
+    return '';
+
+}
+
+function getExpansionMeta(d) {
+    let ex = {
+        title: '',
+        subtitle: '',
+        image: '',
+        isExpansion: false
+    }
+
+    if (!d || !isExpansion(d)) return ex;
+
+    m = d.match(/(.*\/Expansions\/[^\/]+)\/?/);
+    if (!m) return ex
+    root = m[1];
+    let xml = path.join(root, "Expansion.xml");
+    if (!fs.existsSync(xml)) return ex;
+    let fData = fs.readFileSync(xml).toString();
+    let title = getTagData(fData, "title");
+    let image = path.join(root, getTagData(fData, "img"));
+    let multi = getTagData(fData, "multi");
+    let subtitle = '';
+    if (multi == "true") {
+        let sub = d.replace(m[0], '');
+        mt = sub.match(/^[^\/]+/);
+        if (mt) {
+            subtitle = mt[0];
+        }
+
+    }
+
+    ex = {
+        title: title,
+        subtitle: subtitle,
+        image: image,
+        isExpansion: root == d
+    }
+    return ex;
+
+
 }
 
 function getDir(dir, ScanFiles = true) {
     let all = fs.readdirSync(dir);
     let dirs = [];
+    let uncles = [];
     let files = [];
     let hidden = static.CONFIG.ADVANCED_MODE != '1';
+    let isExpansionRoot = dir.endsWith("/Expansions");
+    let uBase = path.dirname(dir);
+
+    uncles = fs.readdirSync(uBase).filter(d => d != 'az01-internal' && (!hidden || !d.startsWith('.')) && fs.existsSync(path.join(uBase, d)) && fs.statSync(path.join(uBase, d))
+        .isDirectory()).map(d => {
+
+            return {
+                NAME: d,
+                PATH: path.join(uBase, d)
+            }
+        });
+
 
     all.forEach(e => {
+
         let full = path.join(dir, e);
         if (!fs.existsSync(full)) return;
         let info = fs.statSync(full);
         let meta = {
             path: full,
+            isExpansionEntry: e == "Expansions",
+            isExpansionRoot: isExpansionRoot,
+
             name: e,
             type: path.extname(e).toUpperCase().substring(1),
             mtime: info.mtime,
@@ -86,9 +171,12 @@ function getDir(dir, ScanFiles = true) {
 
         if (info.isDirectory()) {
             if (e != 'az01-internal' && (!hidden || !e.startsWith('.'))) dirs.push(meta);
+            dirs.forEach((d, i) => { // if the directory is Expansion read xml file and get Title and Image
+                dirs[i]["EXMETA"] = getExpansionMeta(d.path);
+            });
 
         } else {
-           
+
             if (!e.trim().startsWith('.') && !isHidden(e)) {
                 files.push(meta);
             }
@@ -96,8 +184,13 @@ function getDir(dir, ScanFiles = true) {
         }
 
     });
+
     return {
+        isExpansionRoot: isExpansionRoot,
+        isExpansion: isExpansion(dir),
+        EXMETA: getExpansionMeta(dir),
         FOLDERS: dirs,
+        UNCLES: uncles,
         FILES: files,
         FAVS: getFAVS(),
         CONFIG: static.CONFIG
@@ -109,8 +202,13 @@ function getFAVS() {
 
     return Object.keys(static.CONFIG).filter(k => {
         if (!k.startsWith(token)) return false;
-        let p = static.CONFIG[k]; if (p.trim() == '' || !p.trim().startsWith('/media')) return false; return isDir(p);
-    }).map(p => static.CONFIG[p]);
+        let p = static.CONFIG[k];
+
+        p = p.indexOf("::") > 0 ? p.split("::").slice(1).join("::") : p;
+
+        if (p.trim() == '' || !p.trim().startsWith('/')) return false;
+        return isDir(p);
+    }).map(pp => static.CONFIG[pp]);
 
 }
 
@@ -125,6 +223,7 @@ function HOME() {
         '/static/js/libs/jquery-3.5.1.min.js',
         '/static/js/libs/vue.js',
         '/static/js/libs/http_vue_loader.js',
+        '/static/js/libs/tooling-model.js',
         '/static/apps/file-browser/model.js',
         '/static/apps/file-browser/app.js|defer',
     ];
@@ -141,7 +240,8 @@ function HOME() {
 function LIST() {
     let $LISTING = {
         FILES: [],
-        FOLDERS: []
+        FOLDERS: [],
+        UNCLES: []
     };
     if (!REQ.method == "POST") {
         RES.writeHead(503, {
@@ -192,6 +292,11 @@ function FSCOMMAND() {
             try {
                 let fpath = '';
                 switch ($ocmd) {
+                    case 'SAVE':
+                        $rsp.MESSAGE = `${$target} Saved Successfully!`;
+                        doSave($target, $pl.DATA, $rsp);
+                        break;
+
                     case 'CREATE-FOLDER':
                         fpath = path.join($source, $target);
                         $rsp.MESSAGE = `Folder ${fpath} Created!`;
@@ -227,6 +332,11 @@ function FSCOMMAND() {
                         doUNZIP($source, $target, $rsp);
 
                         break;
+                    case 'SETFAV':
+
+                        $rsp.MESSAGE = `Favorite Path Updated: ${$source} `;
+                        setFAV($source);
+                        break;
 
                 }
             } catch (e) {
@@ -247,6 +357,32 @@ ${e.message}
 
     //  RES.end();
 
+}
+
+function getXPMsamples($path) {
+    let samples = [];
+    d = fs.readFileSync($path).toString();
+    //  console.log(d);
+    if (d.indexOf('<Program type="Drum">') == -1 && d.indexOf('<Program type="Keygroup">') == -1)
+        return samples;
+    let nodes = d.match(/<SampleName>(.+)<\/SampleName>/g).map(m => path.join(path.dirname($path), m.replaceAll(/<(\/)*SampleName>/g, '')));
+    nodes = nodes.filter((v, i) => nodes.indexOf(v) == i);
+    nodes.forEach(n => {
+        let n1 = n + ".wav"
+        let n2 = n + ".WAV"
+        if (fs.existsSync(n1)) samples.push(n1);
+        else if (fs.existsSync(n2)) samples.push(n2);
+    });
+
+    return samples;
+
+}
+
+
+function doSave($path, $data, $msg) {
+    data = Buffer.from($data, 'base64').toString();
+    fs.writeFileSync($path, data);
+    RES.end(JSON.stringify($msg));
 }
 
 function CreateFolder($path, $msg) {
@@ -270,6 +406,7 @@ function RESTORE($source, $target, $msg) {
 function doCopy($sources, $target, $mode, $msg) {
     let $ccmd = $mode == 'MOVE' ? 'mv' : 'cp';
     let cmds = ['#!/bin/sh'];
+    //  cmds.push(`set +B`);
     $sources.forEach(s => {
         let $factor = s.TYPE == 'FOLDER' && $mode != "MOVE" ? ' -r' : '';
         let c = `${$ccmd} ${$factor} "${s.PATH}" "${$target}/"`;
@@ -283,20 +420,42 @@ function doCopy($sources, $target, $mode, $msg) {
                 cmds.push(c);
             }
         }
+        if (s.TYPE == "FILE" && isXPM(s.PATH)) {  //HANDLE XPM BY locating samples and copying them over..
+            let fbase = path.join(path.dirname(s.PATH), path.basename(s.PATH, ".xpm"));
+            let dsp = fbase + ".dspreset";
+            let sfz = fbase + ".sfz";
+            let akp = fbase.replace(/_KG$/, "").replace(/_KT$/, "") + ".akp";
+
+
+            let sFiles = [];
+            sFiles = static.CONFIG.COPY_SAMPLES_WITH_XPM == "1" ? getXPMsamples(s.PATH) : [];
+            if (fs.existsSync(dsp)) sFiles.push(dsp);
+            if (fs.existsSync(sfz)) sFiles.push(sfz);
+            if (fs.existsSync(akp)) sFiles.push(akp);
+            $update = $ccmd == "cp" ? " -u" : "";
+            sFiles.forEach(src => {
+                let c = `[[ -f '${src}' ]] && ${$ccmd} ${$update} '${src}' "${$target}/"`;
+                cmds.push(c);
+            });
+        }
     });
 
     let $script = '/tmp/' + Date.now() + '_copy.sh';
+    console.log("Script is", $script);
+    //  cmds.push(`set -B`);
     try {
         fs.writeFileSync($script, cmds.join("\n"));
     } catch (e) {
         console.log(e);
         throw ({ message: 'Unable To Write Batch File to /tmp' });
     }
+    //console.log(cmds.join('\n'));
     const { exec } = require('child_process');
+    require('child_process').execSync(`chmod +x "${$script}"`);
     exec(`sh ${$script}`, { stdio: ['ignore'] }, (err, stdout, stderr) => {
         if (err) {
             console.log(err);
-            helper.shellSync(`rm -f ${$script}`);
+            //    helper.shellSync(`rm -f ${$script}`);
             throw (stderr.toString());
         }
         helper.shellSync(`rm -f ${$script}`);
@@ -304,6 +463,63 @@ function doCopy($sources, $target, $mode, $msg) {
     });
 }
 
+function doSpectrogram() {
+
+    let ret = {
+        MESSAGE: '',
+        ERROR: false,
+    }
+
+    //sxc = `sox --info`
+    //let haveSox = helper.shellSync(sxc).toString();
+    //console.log(haveSox);
+    let $f = unescape(URL.slice(3).join("/"));
+    let tfile = `${$f}.sgram.png`;
+    ;
+    let size = `1024x768`;
+    let cmd = `ffmpeg -y -nostdin -hide_banner -loglevel 0 -i "${$f}"  -lavfi showspectrumpic=s=${size} "${tfile}" 2>/dev/null`;
+
+    try {
+        helper.shellSync(cmd).toString();
+        ret.MESSAGE = tfile;
+
+    } catch (e) {
+        ret.MESSAGE = e.toString();;
+        ret.ERROR = true;
+    }
+
+    RES.end(JSON.stringify(ret));
+
+}
+function setFAV($source) {
+    let hadError = false;
+    let tok = "BROWSER_FAV_";
+    //console.log(static.CONFIG);
+    let ofavs = Object.keys(static.CONFIG).filter(k => k.startsWith(tok)).map(k => static.CONFIG[k]);
+    let favs = ofavs.map((f) => f.replace(/^[^:]+::/, ""));
+    let exIndex = favs.indexOf($source);
+    let ret = {
+        RESULT: 'OK',
+        MESSAGE: "Favorite Added!"
+    };
+    if (exIndex != -1) {
+        static.CONFIG[`${tok}${exIndex + 1}`] = '';
+        ret.MESSAGE = "Favorite Removed!"
+
+    } else {
+        let empty = favs.findIndex(f => f.trim() == '');
+        if (empty == -1) {
+            empty = favs.length; 0
+        }
+        static.CONFIG[`${tok}${empty + 1}`] = $source;
+
+    }
+
+    static.SAVECONFIG(static.CONFIG);
+
+    RES.end(JSON.stringify(ret));
+
+}
 
 
 function doUNZIP($source, $target, $msg) {
@@ -383,7 +599,11 @@ function isProject($path) {
     if (!isDir(path.join($dir, projectDirName($file)))) return false;
     return true;
 
-
+}
+function isXPM($path) {
+    $file = path.basename($path);
+    $dir = path.dirname($path);
+    return isType($file, ".xpm") && fs.existsSync($path);
 
 }
 function projectDirName($file) {
@@ -392,6 +612,8 @@ function projectDirName($file) {
 
 }
 function isDir($path) {
+    // if ($path.indexOf("@") > 0) $path = $path.split("@").slice(1).join("@");
+    //console.log($path);
     return fs.existsSync($path) && fs.statSync($path).isDirectory();
 
 }
@@ -440,7 +662,7 @@ function waitHeader() {
 function DownloadDIR() {
 
     $d = static.CONFIG.DOWNLOADS_DIR || '';
-    if ($d.trim() == '') $d = '/media/662522/Downloads';
+    if ($d.trim() == '') $d = path.join(MOCKBA, 'Downloads');
     if (!isDir($d)) fs.mkdirSync($d);
     return $d;
 }
@@ -510,6 +732,12 @@ function DOWNLOAD() {
         return;
     }
     let $file = unescape($f);
+    if (!fs.existsSync($file)) {
+        RES.writeHead(404, { "Content-Type": "text/plain" });
+        RES.write("404 Not Found\n");
+        RES.end();
+        return;
+    }
     $fn = $file.split('/').pop();
     if (isProject($file) || isDir($file)) {
         GENERATE_ARCHIVE($file);
