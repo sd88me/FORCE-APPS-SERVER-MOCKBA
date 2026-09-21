@@ -44,6 +44,9 @@ function INIT($req, $res, NS) {
         case "DOWNLOAD":
             DOWNLOAD();
             break;
+        case "UPLOAD":
+            UPLOAD();
+            break;
 
     }
 }
@@ -751,4 +754,84 @@ function DOWNLOAD() {
     });
     let fstream = fs.createReadStream($file);
     fstream.pipe(RES);
+}
+
+function UPLOAD() {
+    let $rsp = { RESULT: 'OK', MESSAGE: 'OK' };
+    let $target = unescape(URL.slice(3).join("/"));
+    if (!$target || !isDir($target)) {
+        RES.writeHead(200, { 'Content-Type': 'text/json' });
+        RES.end(JSON.stringify({ RESULT: 'ERROR', MESSAGE: 'Invalid Target Directory' }));
+        return;
+    }
+    $target = path.resolve($target);
+    if (!$target.startsWith(BASE)) {
+        RES.writeHead(200, { 'Content-Type': 'text/json' });
+        RES.end(JSON.stringify({ RESULT: 'ERROR', MESSAGE: 'Invalid Target Directory' }));
+        return;
+    }
+
+    let contentType = REQ.headers['content-type'] || '';
+    let $bmatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/);
+    if (!$bmatch) {
+        RES.writeHead(200, { 'Content-Type': 'text/json' });
+        RES.end(JSON.stringify({ RESULT: 'ERROR', MESSAGE: 'Invalid Upload Request' }));
+        return;
+    }
+    let boundary = $bmatch[1] || $bmatch[2];
+
+    let chunks = [];
+    REQ.on('data', chunk => chunks.push(chunk));
+    REQ.on('end', () => {
+        try {
+            let body = Buffer.concat(chunks);
+            let parts = parseMultipart(body, boundary);
+            let written = [];
+            parts.forEach(p => {
+                if (!p.filename) return;
+                let segs = p.filename.replace(/\\/g, '/').split('/').filter(s => s && s != '.' && s != '..');
+                if (!segs.length) return;
+                let dest = path.resolve(path.join($target, ...segs));
+                if (dest != $target && !dest.startsWith($target + path.sep)) return; // traversal guard
+                fs.mkdirSync(path.dirname(dest), { recursive: true });
+                fs.writeFileSync(dest, p.data);
+                written.push(segs.join('/'));
+            });
+            $rsp.MESSAGE = `Uploaded ${written.length} File(s) to ${$target}`;
+            $rsp.FILES = written;
+            RES.writeHead(200, { 'Content-Type': 'text/json' });
+            RES.end(JSON.stringify($rsp));
+        } catch (e) {
+            console.log(e);
+            RES.writeHead(200, { 'Content-Type': 'text/json' });
+            RES.end(JSON.stringify({ RESULT: 'ERROR', MESSAGE: e.message }));
+        }
+    });
+}
+
+function parseMultipart(buffer, boundary) {
+    let boundaryBuf = Buffer.from('--' + boundary);
+    let parts = [];
+    let start = buffer.indexOf(boundaryBuf);
+    while (start !== -1) {
+        let next = buffer.indexOf(boundaryBuf, start + boundaryBuf.length);
+        if (next === -1) break;
+        let partBuf = buffer.slice(start + boundaryBuf.length, next);
+        let headerEnd = partBuf.indexOf('\r\n\r\n');
+        if (headerEnd !== -1) {
+            let headerStr = partBuf.slice(0, headerEnd).toString('utf8');
+            let data = partBuf.slice(headerEnd + 4, partBuf.length - 2);
+            let nameMatch = headerStr.match(/name="([^"]*)"/);
+            let filenameMatch = headerStr.match(/filename="([^"]*)"/);
+            if (filenameMatch) {
+                parts.push({
+                    name: nameMatch ? nameMatch[1] : '',
+                    filename: filenameMatch[1],
+                    data
+                });
+            }
+        }
+        start = next;
+    }
+    return parts;
 }
