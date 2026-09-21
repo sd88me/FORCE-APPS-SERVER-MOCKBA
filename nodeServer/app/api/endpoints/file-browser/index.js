@@ -10,6 +10,7 @@ const path = require('path');
 const static = require('../static.js');
 const helper = require('../helper.js');
 const { unzip } = require('zlib');
+const { execFileSync } = require('child_process');
 const copySamples = static.CONFIG.COPY_SAMPLES_WITH_XPM == '1';
 
 let MOCKBA = '';
@@ -196,6 +197,7 @@ function getDir(dir, ScanFiles = true) {
         UNCLES: uncles,
         FILES: files,
         FAVS: getFAVS(),
+        DISK: getDiskUsage(dir),
         CONFIG: static.CONFIG
     }
 
@@ -213,6 +215,19 @@ function getFAVS() {
         return isDir(p);
     }).map(pp => static.CONFIG[pp]);
 
+}
+
+function getDiskUsage(dir) {
+    try {
+        let out = execFileSync('df', ['-k', dir], { encoding: 'utf8' });
+        let cols = out.trim().split('\n').pop().trim().split(/\s+/);
+        let total = parseInt(cols[1]) * 1024;
+        let used = parseInt(cols[2]) * 1024;
+        let free = parseInt(cols[3]) * 1024;
+        return { TOTAL: total, USED: used, FREE: free, MOUNT: cols[cols.length - 1] };
+    } catch (e) {
+        return null;
+    }
 }
 
 

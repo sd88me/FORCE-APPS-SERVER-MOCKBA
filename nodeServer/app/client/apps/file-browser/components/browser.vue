@@ -19,6 +19,19 @@
         </div>
       </div>
       <div class="pather">
+        <div v-if="model.DISK" class="diskbar" :title="model.DISK.MOUNT">
+          <span class="diskbar-label"
+            >{{ formatBytes(model.DISK.USED) }} used /
+            {{ formatBytes(model.DISK.FREE) }} free of
+            {{ formatBytes(model.DISK.TOTAL) }}</span
+          >
+          <div class="diskbar-track">
+            <div
+              class="diskbar-fill"
+              :style="{ width: diskUsedPercent + '%' }"
+            ></div>
+          </div>
+        </div>
         <div class="toolbar">
           <div class="left"><span>File Browser</span></div>
           <div class="right">
@@ -466,6 +479,17 @@ module.exports = {
     },
   },
   methods: {
+    formatBytes(bytes) {
+      if (bytes == null) return "";
+      let units = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0;
+      let val = bytes;
+      while (val >= 1024 && i < units.length - 1) {
+        val /= 1024;
+        i++;
+      }
+      return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+    },
     onDragOver() {
       if (this.isReadOnly() || this.uploading) return;
       this.dragging = true;
@@ -1075,6 +1099,10 @@ ${msg}
     verbose() {
       return this.model.CONFIG.LESS_PROMPTS != "1";
     },
+    diskUsedPercent() {
+      if (!this.model.DISK || !this.model.DISK.TOTAL) return 0;
+      return Math.round((this.model.DISK.USED / this.model.DISK.TOTAL) * 100);
+    },
     FOLDERS() {
       if (this.filter.trim() == "") return this.model.FOLDERS;
       return this.model.FOLDERS.filter(
@@ -1133,6 +1161,28 @@ ${msg}
 <style scoped>
 .mui {
   position: relative;
+}
+.diskbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.diskbar-label {
+  white-space: nowrap;
+}
+.diskbar-track {
+  flex: 1;
+  height: 6px;
+  background-color: #444;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.diskbar-fill {
+  height: 100%;
+  background-color: steelblue;
+  transition: width 0.2s;
 }
 .dropzone {
   position: absolute;

@@ -11,6 +11,7 @@ let Model = {
     SORTDESC: false,
     TOOLING_OPERATIONS: TOOLING_OPERATIONS,
     CONFIG: {},
+    DISK: null,
     CLIPBOARD: {
         PATH: '',
         OPERARATION: "COPY",
@@ -43,6 +44,7 @@ let Model = {
                     Model.UNCLES = data.UNCLES;
                     Model.FAVS = data.FAVS;
                     Model.CONFIG = data.CONFIG;
+                    Model.DISK = data.DISK;
                     Model.isExpansionRoot = data.isExpansionRoot;
                     Model.isExpansion = data.isExpansion;
                     Model.EXMETA = data.EXMETA;
