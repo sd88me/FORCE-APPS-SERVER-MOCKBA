@@ -1,12 +1,17 @@
 let Model = {
     PATH: '/media',
+    CACHE: [],
     FILES: [],
     FOLDERS: [],
+    UNCLES: [],
     FAVS: [],
     UPDATED: false,
     SORTBY: 'name',
+    SORTNUMERIC: false,
     SORTDESC: false,
-    CONFIG:{},
+    TOOLING_OPERATIONS: TOOLING_OPERATIONS,
+    CONFIG: {},
+    DISK: null,
     CLIPBOARD: {
         PATH: '',
         OPERARATION: "COPY",
@@ -36,50 +41,54 @@ let Model = {
                 response.json().then(data => {
                     Model.FILES = data.FILES;
                     Model.FOLDERS = data.FOLDERS;
+                    Model.UNCLES = data.UNCLES;
                     Model.FAVS = data.FAVS;
-                    Model.CONFIG=data.CONFIG;
-                    Model.doSorting(Model.SORTBY, false, true);
+                    Model.CONFIG = data.CONFIG;
+                    Model.DISK = data.DISK;
+                    Model.isExpansionRoot = data.isExpansionRoot;
+                    Model.isExpansion = data.isExpansion;
+                    Model.EXMETA = data.EXMETA;
+                    Model.doSorting(Model.SORTBY, Model.SORTNUMERIC, true);
 
                     Model.update();
 
                 });
-            });
+            }).catch((e => console.log(e.message)));
+
+    },
+    sortFlat(arr, fld, numbered) {
+        arr.sort((a, b) => {
+            if (!numbered) return compare(a[fld], b[fld]);
+            return Number(a[fld]) - Number(b[fld]);
+        });
 
     },
     doSorting(fld, numbered, forced = false) {
-        let excludes = ['size', 'type'];
-        if (Model.SORTBY == fld && !forced) {
-            Model.SORTDESC = !Model.SORTDESC;
-            Model.FILES = Model.FILES.reverse();
-            if (!excludes.includes(fld)) Model.FOLDERS = Model.FOLDERS.reverse();
+        Model.SORTNUMERIC = numbered;
+        Model.SORTBY = fld;
+
+        let nonFolder = ['size', 'type'];
+
+        this.sortFlat(Model.FILES, fld, numbered);
+
+        if (nonFolder.includes(fld)) {
+            this.sortFlat(Model.FOLDERS, 'name', false);
+        } else {
+            this.sortFlat(Model.FOLDERS, fld, numbered);
         }
-        else {
 
-            Model.SORTBY = fld;
-            Model.FILES.sort((a, b) => {
-                if (!numbered) return compare(a[fld], b[fld]);
-                return Number(a[fld]) - Number(b[fld]);
-            });
-            if (!excludes.includes(fld)) {
+        if (Model.SORTDESC) {
 
-                Model.FOLDERS.sort((a, b) => {
-                    if (!numbered) return compare(a[fld], b[fld]);
-                    return Number(a[fld]) - Number(b[fld]);
-
-                });
+            Model.FILES = Model.FILES.reverse();
+            if (nonFolder.includes(fld)) {
+                this.sortFlat(Model.FOLDERS, 'name', false);
             }
-            // Model.SORTDESC = !Model.SORTDESC;
-            if (Model.SORTDESC) {
-
-                Model.FILES = Model.FILES.reverse();
-                if (!['size'].includes(fld)) Model.FOLDERS = Model.FOLDERS.reverse();
+            else {
                 Model.FOLDERS = Model.FOLDERS.reverse();
             }
         }
 
-
         Model.update();
-
 
     },
 

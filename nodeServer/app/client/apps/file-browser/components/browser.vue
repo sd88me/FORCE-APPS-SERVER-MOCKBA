@@ -1,7 +1,37 @@
 <template>
   <div class="master">
-    <div class="mui" v-show="!browsing & !imaging && !reading">
+    <div
+      class="mui"
+      v-show="!browsing & !imaging && !reading"
+      @dragover.prevent="onDragOver"
+      @dragenter.prevent="onDragOver"
+      @dragleave.prevent="onDragLeave"
+      @drop.prevent="onDrop"
+    >
+      <div v-if="dragging" class="dropzone">
+        <span class="material-icons">cloud_upload</span>
+        <span>Drop Files/Folders to Upload to {{ model.PATH }}</span>
+      </div>
+      <div v-if="uploading" class="uploadbar">
+        <span>Uploading... {{ uploadProgress }}%</span>
+        <div class="uploadbar-track">
+          <div class="uploadbar-fill" :style="{ width: uploadProgress + '%' }"></div>
+        </div>
+      </div>
       <div class="pather">
+        <div v-if="model.DISK" class="diskbar" :title="model.DISK.MOUNT">
+          <span class="diskbar-label"
+            >{{ formatBytes(model.DISK.USED) }} used /
+            {{ formatBytes(model.DISK.FREE) }} free of
+            {{ formatBytes(model.DISK.TOTAL) }}</span
+          >
+          <div class="diskbar-track">
+            <div
+              class="diskbar-fill"
+              :style="{ width: diskUsedPercent + '%' }"
+            ></div>
+          </div>
+        </div>
         <div class="toolbar">
           <div class="left"><span>File Browser</span></div>
           <div class="right">
@@ -436,6 +466,9 @@ module.exports = {
       filter_timer: null,
       dialogTitle: "",
       video: false,
+      dragging: false,
+      uploading: false,
+      uploadProgress: 0,
     };
   },
 
@@ -446,6 +479,106 @@ module.exports = {
     },
   },
   methods: {
+    formatBytes(bytes) {
+      if (bytes == null) return "";
+      let units = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0;
+      let val = bytes;
+      while (val >= 1024 && i < units.length - 1) {
+        val /= 1024;
+        i++;
+      }
+      return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+    },
+    onDragOver() {
+      if (this.isReadOnly() || this.uploading) return;
+      this.dragging = true;
+    },
+    onDragLeave(e) {
+      if (e.target === e.currentTarget) this.dragging = false;
+    },
+    onDrop(e) {
+      this.dragging = false;
+      if (this.isReadOnly() || this.uploading) return;
+      let items = e.dataTransfer ? e.dataTransfer.items : null;
+      if (!items || !items.length) return;
+      let entries = [];
+      for (let i = 0; i < items.length; i++) {
+        let entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+        if (entry) entries.push(entry);
+      }
+      if (!entries.length) return;
+      let files = [];
+      let queue = entries.map((entry) => this.collectEntry(entry, "", files));
+      Promise.all(queue).then(() => {
+        if (files.length) this.uploadFiles(files);
+      });
+    },
+    collectEntry(entry, base, files) {
+      return new Promise((resolve) => {
+        if (entry.isFile) {
+          entry.file(
+            (file) => {
+              files.push({ file, relPath: base + entry.name });
+              resolve();
+            },
+            () => resolve()
+          );
+        } else if (entry.isDirectory) {
+          let reader = entry.createReader();
+          let allEntries = [];
+          const readBatch = () => {
+            reader.readEntries((batch) => {
+              if (!batch.length) {
+                Promise.all(
+                  allEntries.map((child) =>
+                    this.collectEntry(child, base + entry.name + "/", files)
+                  )
+                ).then(resolve);
+              } else {
+                allEntries = allEntries.concat(batch);
+                readBatch();
+              }
+            }, () => resolve());
+          };
+          readBatch();
+        } else {
+          resolve();
+        }
+      });
+    },
+    uploadFiles(files) {
+      let fd = new FormData();
+      files.forEach((f) => fd.append("files", f.file, f.relPath));
+      this.uploading = true;
+      this.uploadProgress = 0;
+      let xhr = new XMLHttpRequest();
+      xhr.open(
+        "POST",
+        `/file-browser/UPLOAD/${escape(this.model.PATH)}`
+      );
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          this.uploadProgress = Math.round((ev.loaded / ev.total) * 100);
+        }
+      };
+      xhr.onload = () => {
+        this.uploading = false;
+        try {
+          let data = JSON.parse(xhr.responseText);
+          if (data.RESULT == "ERROR") {
+            alert(`*** ERROR ***\n${data.MESSAGE}`);
+          }
+        } catch (e) {}
+        this.model.refresh();
+      };
+      xhr.onerror = () => {
+        this.uploading = false;
+        alert("Upload Failed");
+        this.model.refresh();
+      };
+      xhr.send(fd);
+    },
     restoreBackup(p) {
       let $target = p.replace(/-\[\[[^\[]+Z\]\]\.xpjbk/, ".xpj");
 
@@ -966,6 +1099,10 @@ ${msg}
     verbose() {
       return this.model.CONFIG.LESS_PROMPTS != "1";
     },
+    diskUsedPercent() {
+      if (!this.model.DISK || !this.model.DISK.TOTAL) return 0;
+      return Math.round((this.model.DISK.USED / this.model.DISK.TOTAL) * 100);
+    },
     FOLDERS() {
       if (this.filter.trim() == "") return this.model.FOLDERS;
       return this.model.FOLDERS.filter(
@@ -1022,6 +1159,79 @@ ${msg}
 };
 </script>
 <style scoped>
+.mui {
+  position: relative;
+}
+.diskbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.diskbar-label {
+  white-space: nowrap;
+}
+.diskbar-track {
+  flex: 1;
+  height: 6px;
+  background-color: #444;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.diskbar-fill {
+  height: 100%;
+  background-color: steelblue;
+  transition: width 0.2s;
+}
+.dropzone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(251, 215, 117, 0.92);
+  border: 4px dashed #000;
+  font-size: 16px;
+  font-weight: bold;
+  pointer-events: none;
+}
+.dropzone .material-icons {
+  font-size: 48px;
+  opacity: 1;
+}
+.uploadbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100000;
+  background-color: #000;
+  color: gold;
+  font-size: 11px;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.uploadbar-track {
+  width: 100%;
+  height: 4px;
+  background-color: #444;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.uploadbar-fill {
+  height: 100%;
+  background-color: forestgreen;
+  transition: width 0.2s;
+}
 h2 {
   margin: 0;
   margin-bottom: 8px;
